@@ -1,0 +1,12 @@
+{
+  "nukefm_api_base_url": "https://nukefm.xyz",
+  "openrouter_model": "moonshotai/kimi-k2.6",
+  "max_trade_usdc": "1",
+  "max_daily_spend_usdc": "5",
+  "max_per_market_exposure_usdc": "2",
+  "min_forecast_edge": "0.05",
+  "forecast_ttl_seconds": 3600,
+  "max_search_results": 5,
+  "log_path": "logs/trader.log",
+  "state_path": "data/trader.sqlite3"
+}
