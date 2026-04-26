@@ -17,6 +17,7 @@ from nukefm_trader_bot.bot import (
     forecast_context,
     forecast_response_format,
     parse_forecast,
+    _strip_markdown_code_fence,
 )
 
 
@@ -140,6 +141,32 @@ def test_parse_forecast_requires_content() -> None:
         parse_forecast(None, created_at=datetime(2026, 4, 26, tzinfo=UTC))
 
 
+def test_parse_forecast_strips_labeled_fence() -> None:
+    raw = (
+        '```json\n{"forecast_price_usd": 2, "confidence": 0.7, '
+        '"rationale": "ok", "sources": ["https://example.test"]}\n```'
+    )
+    forecast = parse_forecast(raw, created_at=datetime(2026, 4, 26, tzinfo=UTC))
+    assert forecast.forecast_price_usd == Decimal("2")
+
+
+def test_parse_forecast_accepts_unclosed_fence() -> None:
+    raw = (
+        '```json\n{"forecast_price_usd": 2, "confidence": 0.7, '
+        '"rationale": "ok", "sources": []}'
+    )
+    forecast = parse_forecast(raw, created_at=datetime(2026, 4, 26, tzinfo=UTC))
+    assert forecast.forecast_price_usd == Decimal("2")
+
+
+def test_strip_markdown_fence_two_line_openrouter_shape() -> None:
+    """Older logic used lines[1:-1], which dropped the payload when only two lines existed."""
+    raw = '```\n{"forecast_price_usd": 2, "confidence": 0.7, "rationale": "x", "sources": []}'
+    stripped = _strip_markdown_code_fence(raw)
+    assert stripped.startswith("{")
+    assert '"forecast_price_usd": 2' in stripped
+
+
 def test_bot_trades_long_toward_forecast(tmp_path: Path) -> None:
     store = BotStore(tmp_path / "state.sqlite3")
     api = FakeMarketApi(token=token_fixture(), account=account_fixture())
@@ -238,6 +265,8 @@ def test_cached_forecast_survives_new_store_instance(tmp_path: Path) -> None:
 
 def test_openrouter_forecaster_uses_kimi_with_web_search(monkeypatch) -> None:
     class FakeResponse:
+        status_code = 200
+
         def raise_for_status(self) -> None:
             pass
 

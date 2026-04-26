@@ -8,7 +8,7 @@ from .bot import build_bot
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="nukefm-trader-bot")
-    parser.add_argument("--config", type=Path, default=Path("bots/trader/config.json"))
+    parser.add_argument("--config", type=Path, default=Path("config.json"))
     arguments = parser.parse_args()
 
     bot = build_bot(arguments.config)
