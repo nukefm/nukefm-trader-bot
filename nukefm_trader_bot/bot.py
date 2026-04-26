@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 from typing import Protocol
+from urllib.parse import quote
 
 from loguru import logger
 import requests
@@ -16,6 +18,20 @@ import requests
 USDC_ATOMIC = Decimal("1000000")
 ONE = Decimal("1")
 ZERO = Decimal("0")
+
+HTTP_TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
+HTTP_MAX_ATTEMPTS = 3
+
+
+def _is_transient_request_error(error: BaseException) -> bool:
+    if isinstance(error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+    if isinstance(error, requests.exceptions.ChunkedEncodingError):
+        return True
+    if isinstance(error, requests.exceptions.HTTPError) and error.response is not None:
+        return error.response.status_code in HTTP_TRANSIENT_STATUSES
+    return False
+
 
 FORECAST_SYSTEM_PROMPT = (
     "Forecast the Bags token's USD price at the listed market expiry. "
@@ -144,9 +160,10 @@ class NukefmApiClient:
         )
 
     def submit_rationale(self, *, mint: str, forecast: Forecast) -> dict:
+        safe_mint = quote(mint, safe="")
         return self._request(
             "POST",
-            f"/v1/private/tokens/{mint}/rationale",
+            f"/v1/private/tokens/{safe_mint}/rationale",
             private=True,
             json_body={
                 "forecast_price_usd": str(forecast.forecast_price_usd),
@@ -158,15 +175,26 @@ class NukefmApiClient:
 
     def _request(self, method: str, path: str, *, private: bool = False, json_body: dict | None = None) -> dict:
         headers = {"X-API-Key": self._api_key} if private else None
-        response = self._session.request(
-            method,
-            f"{self._base_url}{path}",
-            headers=headers,
-            json=json_body,
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()
+        url = f"{self._base_url}{path}"
+        for attempt in range(HTTP_MAX_ATTEMPTS):
+            try:
+                response = self._session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    timeout=30,
+                )
+            except requests.RequestException as error:
+                if attempt < HTTP_MAX_ATTEMPTS - 1 and _is_transient_request_error(error):
+                    time.sleep(2**attempt)
+                    continue
+                raise
+            if response.status_code in HTTP_TRANSIENT_STATUSES and attempt < HTTP_MAX_ATTEMPTS - 1:
+                time.sleep(2**attempt)
+                continue
+            response.raise_for_status()
+            return response.json()
 
 
 class OpenRouterForecaster:
@@ -177,38 +205,46 @@ class OpenRouterForecaster:
         self._session = requests.Session()
 
     def forecast(self, token: dict) -> Forecast:
-        response = self._session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self._model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": FORECAST_SYSTEM_PROMPT,
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": FORECAST_SYSTEM_PROMPT,
+                },
+                {"role": "user", "content": json.dumps(forecast_context(token), sort_keys=True)},
+            ],
+            "tools": [
+                {
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "max_results": self._max_search_results,
+                        "max_total_results": self._max_search_results,
+                        "search_context_size": "medium",
                     },
-                    {"role": "user", "content": json.dumps(forecast_context(token), sort_keys=True)},
-                ],
-                "tools": [
-                    {
-                        "type": "openrouter:web_search",
-                        "parameters": {
-                            "max_results": self._max_search_results,
-                            "max_total_results": self._max_search_results,
-                            "search_context_size": "medium",
-                        },
-                    }
-                ],
-                "response_format": forecast_response_format(),
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return parse_forecast(content, created_at=utc_now())
+                }
+            ],
+            "response_format": forecast_response_format(),
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        for attempt in range(HTTP_MAX_ATTEMPTS):
+            try:
+                response = self._session.post(url, headers=headers, json=payload, timeout=120)
+            except requests.RequestException as error:
+                if attempt < HTTP_MAX_ATTEMPTS - 1 and _is_transient_request_error(error):
+                    time.sleep(2**attempt)
+                    continue
+                raise
+            if response.status_code in HTTP_TRANSIENT_STATUSES and attempt < HTTP_MAX_ATTEMPTS - 1:
+                time.sleep(2**attempt)
+                continue
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            return parse_forecast(content, created_at=utc_now())
 
 
 class BotStore:
@@ -603,14 +639,27 @@ def forecast_response_format() -> dict:
     }
 
 
+def _strip_markdown_code_fence(text: str) -> str:
+    """Extract JSON from an LLM reply; handles optional fences and missing closing markers."""
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    first_break = t.find("\n")
+    if first_break == -1:
+        return t[3:].strip()
+    body = t[first_break + 1 :]
+    trimmed = body.rstrip()
+    if trimmed.endswith("```"):
+        end_fence = trimmed.rfind("```")
+        body = trimmed[:end_fence]
+    return body.strip()
+
+
 def parse_forecast(content: str | None, *, created_at: datetime) -> Forecast:
     if content is None:
         raise ValueError("OpenRouter returned no forecast content.")
 
-    text = content.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]).strip()
+    text = _strip_markdown_code_fence(content)
     data = json.loads(text)
     forecast_price = Decimal(str(data["forecast_price_usd"]))
     confidence = Decimal(str(data["confidence"]))

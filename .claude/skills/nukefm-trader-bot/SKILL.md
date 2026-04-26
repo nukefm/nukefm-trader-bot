@@ -32,5 +32,5 @@ Use this skill for changes to `bots/trader` or for operating the LLM trading loo
 
 ## Validation
 
-- Run `uv run --project bots/trader pytest` after code changes.
+- Run `uv run pytest` (from the repo root) after code changes.
 - Run the root app tests if API fields or scalar market semantics change.
