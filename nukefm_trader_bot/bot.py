@@ -17,6 +17,20 @@ USDC_ATOMIC = Decimal("1000000")
 ONE = Decimal("1")
 ZERO = Decimal("0")
 
+FORECAST_SYSTEM_PROMPT = (
+    "Forecast the Bags token's USD price at the listed market expiry. "
+    "The nuke.fm/Bags token context in the user message is the canonical price, market-cap, mint, and unit source. "
+    "Use web search only for catalysts or corroborating context. "
+    "Never replace the canonical Bags reference price or market cap with an external page unless that page verifies the exact same Solana mint. "
+    "Ticker/name matches are not enough because many meme tokens share symbols. "
+    "If external data conflicts with the canonical Bags context or cannot be matched to the mint, ignore that external price data and mention the mismatch briefly. "
+    "Return only JSON with keys forecast_price_usd, confidence, rationale, sources. "
+    "forecast_price_usd and confidence must be JSON numbers. "
+    "forecast_price_usd must use the same USD price units as reference_price_usd and chart.underlying_price_usd. "
+    "confidence must be between 0 and 1; never use words like low, medium, or high. "
+    "rationale must be 2-4 concise sentences."
+)
+
 
 @dataclass(frozen=True)
 class BotConfig:
@@ -174,13 +188,7 @@ class OpenRouterForecaster:
                 "messages": [
                     {
                         "role": "system",
-                        "content": (
-                            "Forecast the token's USD price at the listed market expiry. "
-                            "Use web search when useful. Return only JSON with keys "
-                            "forecast_price_usd, confidence, rationale, sources. "
-                            "forecast_price_usd and confidence must be JSON numbers. "
-                            "confidence must be between 0 and 1; never use words like low, medium, or high."
-                        ),
+                        "content": FORECAST_SYSTEM_PROMPT,
                     },
                     {"role": "user", "content": json.dumps(forecast_context(token), sort_keys=True)},
                 ],
@@ -544,12 +552,19 @@ def forecast_context(token: dict) -> dict:
             "long_price_usd": market.get("long_price_usd"),
             "short_price_usd": market.get("short_price_usd"),
             "implied_price_usd": market.get("implied_price_usd"),
+            "reference_price_usd": market.get("reference_price_usd"),
             "min_price_usd": market.get("min_price_usd"),
             "max_price_usd": market.get("max_price_usd"),
             "total_liquidity_usdc": market.get("total_liquidity_usdc"),
             "pm_volume_24h_usdc": market.get("pm_volume_24h_usdc"),
             "underlying_volume_24h_usd": market.get("underlying_volume_24h_usd"),
             "underlying_market_cap_usd": market.get("underlying_market_cap_usd"),
+            "market_cap_kind": market.get("market_cap_kind"),
+        },
+        "forecasting_rules": {
+            "canonical_price_field": "market.reference_price_usd",
+            "forecast_price_units": "same USD token-price units as market.reference_price_usd and chart.underlying_price_usd",
+            "external_source_rule": "Only use external price or market-cap data if it verifies the exact token.mint; ticker/name matches alone are invalid.",
         },
         "chart": token.get("current_market_chart", {}).get("points", [])[-24:],
     }

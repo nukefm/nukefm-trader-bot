@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from nukefm_trader_bot.bot import (
     OpenRouterForecaster,
     TradeDecision,
     TraderBot,
+    forecast_context,
     forecast_response_format,
     parse_forecast,
 )
@@ -101,12 +103,14 @@ def token_fixture(*, state: str = "open", liquidity: str | None = "10") -> dict:
             "long_price_usd": "0.50",
             "short_price_usd": "0.50",
             "implied_price_usd": "1",
+            "reference_price_usd": "1.2",
             "min_price_usd": "0.1",
             "max_price_usd": "10",
             "total_liquidity_usdc": liquidity,
             "pm_volume_24h_usdc": "1",
             "underlying_volume_24h_usd": "100",
             "underlying_market_cap_usd": "1000",
+            "market_cap_kind": "circulating",
         },
     }
 
@@ -271,6 +275,11 @@ def test_openrouter_forecaster_uses_kimi_with_web_search(monkeypatch) -> None:
 
     assert forecast.forecast_price_usd == Decimal("2")
     assert fake_session.payload["model"] == "moonshotai/kimi-k2.6"
+    assert fake_session.payload["messages"][0]["content"].count("exact same Solana mint") == 1
+    assert fake_session.payload["messages"][0]["content"].count("Ticker/name matches are not enough") == 1
+    user_context = json.loads(fake_session.payload["messages"][1]["content"])
+    assert user_context["market"]["reference_price_usd"] == "1.2"
+    assert user_context["forecasting_rules"]["canonical_price_field"] == "market.reference_price_usd"
     assert fake_session.payload["tools"] == [
         {
             "type": "openrouter:web_search",
@@ -282,3 +291,11 @@ def test_openrouter_forecaster_uses_kimi_with_web_search(monkeypatch) -> None:
         }
     ]
     assert fake_session.payload["response_format"] == forecast_response_format()
+
+
+def test_forecast_context_keeps_bags_reference_price_prominent() -> None:
+    context = forecast_context(token_fixture())
+
+    assert context["market"]["reference_price_usd"] == "1.2"
+    assert context["market"]["market_cap_kind"] == "circulating"
+    assert "exact token.mint" in context["forecasting_rules"]["external_source_rule"]
