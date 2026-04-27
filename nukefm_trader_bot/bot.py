@@ -18,7 +18,7 @@ ONE = Decimal("1")
 ZERO = Decimal("0")
 
 FORECAST_SYSTEM_PROMPT = (
-    "Forecast the Bags token's USD price at the listed market expiry. "
+    "Forecast the Bags token's USD price at the listed market end date. "
     "The nuke.fm/Bags token context in the user message is the canonical price, market-cap, mint, and unit source. "
     "Use web search only for catalysts or corroborating context. "
     "Never replace the canonical Bags reference price or market cap with an external page unless that page verifies the exact same Solana mint. "
@@ -582,7 +582,7 @@ def forecast_response_format() -> dict:
                 "properties": {
                     "forecast_price_usd": {
                         "type": "number",
-                        "description": "Positive USD price forecast at market expiry.",
+                        "description": "Positive USD price forecast at the market end date.",
                     },
                     "confidence": {
                         "type": "number",
